@@ -14,6 +14,7 @@ dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 const PORT = process.env.PORT || 4000;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
@@ -499,7 +500,6 @@ app.post('/api/xnova/create-payment', async (req, res) => {
       shipping_discount: '0.00',
       discount: '0.00',
       website: FRONTEND_URL.replace(/^https?:\/\//, ''),
-      referrer: referrerUrl,
       items: itemsStr,
       cart_items: cartItems,
       first_name: firstName,
@@ -679,17 +679,18 @@ app.post('/api/xnova/create-payment', async (req, res) => {
         return res.status(400).json({ error: 'received_html_instead_of_json', raw: text.substring(0, 500) + '...' });
     }
 
-    // Adjust 'payment_url' to whatever field Xnova returns (e.g. redirect_url, payUrl)
-    // Direct API Success:
-    // {"status": "1", "payment_url": "...", "transaction_id": "..."}
-    if (data && String(data.status) === '1' && (data.payment_url || data.url || data.redirect_url)) {
+    const rawStatus =
+      data &&
+      (data.order_status ??
+       data.OrderStatus ??
+       data.status ??
+       data.Status);
+
+    if (rawStatus && String(rawStatus) === '1' && (data.payment_url || data.url || data.redirect_url)) {
       res.json({ url: data.payment_url || data.url || data.redirect_url, orderId });
-    } else if (data && String(data.status) === '1') {
-       // Success but no URL? Maybe direct success without redirect.
-       // Return a success URL to frontend to show confirmation.
-       res.json({ url: `${FRONTEND_URL}/#/order-confirmation?orderId=${orderId}`, orderId });
+    } else if (rawStatus && String(rawStatus) === '1') {
+      res.json({ url: `${FRONTEND_URL}/#/order-confirmation?orderId=${orderId}`, orderId });
     } else {
-      // If failed, return error
       console.error('Xnova Payment Failed:', data);
       res.status(400).json({ error: 'payment_creation_failed', details: data || { raw: text, status: resp.status } });
     }
@@ -703,13 +704,16 @@ app.post('/api/xnova/create-payment', async (req, res) => {
 // Xnova Webhook
 app.post('/api/xnova/notify', async (req, res) => {
   try {
-    const body = req.body;
+    const body = req.body || {};
     console.log('Xnova Notify received:', body);
     
-    // 1. Verify Signature (TODO: Implement based on docs)
-    // 2. Update Order
-    const orderId = body.order_id || body.OrderNo;
-    const status = (body.status === 'success' || body.Status === 'Success') ? 'paid' : 'failed';
+    const orderId = body.order_id || body.order_no || body.OrderNo || body.OrderID;
+    const isPaid =
+      body.order_status === '1' ||
+      body.OrderStatus === '1' ||
+      body.status === 'success' ||
+      body.Status === 'Success';
+    const status = isPaid ? 'paid' : 'failed';
 
     if (status === 'paid' && orderId && supabaseAdmin) {
        await supabaseAdmin.from('orders').update({ status: 'paid' }).eq('id', orderId);
