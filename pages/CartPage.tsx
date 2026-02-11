@@ -95,11 +95,11 @@ const CartPage: React.FC<CartPageProps> = ({ items, removeFromCart, updateQuanti
                 </div>
               </div>
               <div className="col-span-2 text-right hidden sm:block">
-                <p className="text-sm font-medium text-stone-900">${item.price.toFixed(2)}</p>
+                <p className="text-sm font-medium text-stone-900">$0.01</p>
               </div>
               <div className="col-span-2 flex justify-between sm:block sm:text-right items-center mt-2 sm:mt-0">
                 <span className="sm:hidden text-sm font-medium text-stone-500">Total:</span>
-                <p className="text-base font-bold text-stone-900">${(item.price * item.quantity).toFixed(2)}</p>
+                <p className="text-base font-bold text-stone-900">${(0.01 * item.quantity).toFixed(2)}</p>
               </div>
             </div>
           ))}
@@ -117,7 +117,9 @@ const CartPage: React.FC<CartPageProps> = ({ items, removeFromCart, updateQuanti
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <p className="text-sm text-stone-600">Subtotal</p>
-                <p className="text-sm font-medium text-stone-900">${subtotal.toFixed(2)}</p>
+                <p className="text-sm font-medium text-stone-900">
+                  ${items.reduce((sum, item) => sum + 0.01 * item.quantity, 0).toFixed(2)}
+                </p>
               </div>
               <div className="flex items-center justify-between">
                 <p className="text-sm text-stone-600">Shipping Estimate</p>
@@ -130,7 +132,9 @@ const CartPage: React.FC<CartPageProps> = ({ items, removeFromCart, updateQuanti
               <div className="pt-4 border-t border-border-light">
                 <div className="flex items-center justify-between mb-6">
                   <p className="text-base font-bold text-stone-900">Order Total</p>
-                  <p className="text-2xl font-black text-primary">${total.toFixed(2)}</p>
+                  <p className="text-2xl font-black text-primary">
+                    ${items.reduce((sum, item) => sum + 0.01 * item.quantity, 0).toFixed(2)}
+                  </p>
                 </div>
                 <Link to="/checkout" className="block w-full rounded-xl bg-primary py-4 text-center text-sm font-bold text-white shadow-md hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 transition-all">
                   Proceed to Checkout

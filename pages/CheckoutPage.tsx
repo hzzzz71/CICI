@@ -14,6 +14,7 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({ items }) => {
   const [loading, setLoading] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'alipay' | 'xnova'>('xnova');
 
   // Calculate totals matching CartPage logic
   const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
@@ -43,6 +44,63 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({ items }) => {
       setPaymentError('');
       setLoading(true);
       const baseUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
+
+      if (paymentMethod === 'xnova') {
+        // Collect Card Info
+        const cardNo = (document.getElementById('cardNo') as HTMLInputElement)?.value?.replace(/\s/g, '');
+        const cardExp = (document.getElementById('cardExp') as HTMLInputElement)?.value;
+        const cardCvv = (document.getElementById('cardCvv') as HTMLInputElement)?.value;
+        
+        let expMonth = '';
+        let expYear = '';
+        if (cardExp) {
+           const parts = cardExp.split('/');
+           if (parts.length === 2) {
+             expMonth = parts[0];
+             expYear = parts[1];
+           }
+        }
+
+        fetch(`${baseUrl}/api/xnova/create-payment`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+             items, 
+             customerEmail: userEmail, 
+             userId,
+             // Pass card info (Caution: Only for testing or if PCI compliant)
+             card: { no: cardNo, expMonth, expYear, cvv: cardCvv }
+          }),
+        })
+          .then(async (r) => {
+             const data = await r.json();
+             if (!r.ok) throw new Error(data.error || 'Payment initialization failed');
+             return data;
+          })
+          .then((data) => {
+            setLoading(false);
+            if (data && data.orderId) {
+              try {
+                localStorage.setItem('last_order_id', data.orderId);
+              } catch {}
+            }
+            if (data && data.status === 'success') {
+               // Direct success
+               handlePaymentSuccess();
+            } else if (data && data.url) {
+               // 3DS or Redirect
+               window.location.href = data.url;
+            } else {
+              setPaymentError('Payment processing failed: ' + (data.message || 'Unknown error'));
+            }
+          })
+          .catch((err) => {
+            setLoading(false);
+            setPaymentError(err.message || 'Payment service unavailable.');
+          });
+        return;
+      }
+
       fetch(`${baseUrl}/api/create-checkout-session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -129,9 +187,60 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({ items }) => {
           )}
           
           <div className="space-y-4 mb-8">
-            <div className="relative rounded-xl border-2 border-[#1677FF] bg-blue-50/50 overflow-hidden shadow-sm">
+              {/* Xnova / Credit Card Option */}
+              <div className={`relative rounded-xl border-2 ${paymentMethod === 'xnova' ? 'border-[#1677FF] bg-blue-50/50' : 'border-stone-200 bg-white'} overflow-hidden shadow-sm transition-colors`}>
+                <label className="flex items-start p-4 cursor-pointer gap-4">
+                  <input 
+                    type="radio" 
+                    name="payment_method" 
+                    className="mt-1 w-5 h-5 text-[#1677FF] border-stone-300 focus:ring-[#1677FF]" 
+                    checked={paymentMethod === 'xnova'}
+                    onChange={() => setPaymentMethod('xnova')}
+                  />
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-stone-900">Credit / Debit Card</span>
+                        <span className="text-xs bg-stone-100 text-stone-600 px-1.5 rounded border border-stone-200">Secure</span>
+                      </div>
+                      <div className="flex gap-2 text-stone-400">
+                        <span className="material-symbols-outlined">credit_card</span>
+                      </div>
+                    </div>
+                    <p className="text-sm text-stone-500">Pay securely with Visa, Mastercard, or other cards.</p>
+                  </div>
+                </label>
+                
+                {paymentMethod === 'xnova' && (
+                  <div className="px-4 pb-4 pt-0 space-y-4 border-t border-[#1677FF]/20 bg-white/50 mt-2">
+                     <div className="pt-4">
+                        <label className="block text-sm font-medium text-stone-700 mb-1">Card Number</label>
+                        <input type="text" id="cardNo" placeholder="4242 4242 4242 4242" className="w-full rounded-lg border-stone-300 focus:ring-[#1677FF] focus:border-[#1677FF]" />
+                     </div>
+                     <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-stone-700 mb-1">Expiration (MM/YYYY)</label>
+                          <input type="text" id="cardExp" placeholder="12/2030" className="w-full rounded-lg border-stone-300 focus:ring-[#1677FF] focus:border-[#1677FF]" />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-stone-700 mb-1">CVV / CVC</label>
+                          <input type="text" id="cardCvv" placeholder="123" className="w-full rounded-lg border-stone-300 focus:ring-[#1677FF] focus:border-[#1677FF]" />
+                        </div>
+                     </div>
+                  </div>
+                )}
+              </div>
+
+            {/* Alipay Option */}
+            <div className={`relative rounded-xl border-2 ${paymentMethod === 'alipay' ? 'border-[#1677FF] bg-blue-50/50' : 'border-stone-200 bg-white'} overflow-hidden shadow-sm transition-colors`}>
               <label className="flex items-start p-4 cursor-pointer gap-4">
-                <input type="radio" name="payment_method" className="mt-1 w-5 h-5 text-[#1677FF] border-stone-300 focus:ring-[#1677FF]" defaultChecked />
+                <input 
+                  type="radio" 
+                  name="payment_method" 
+                  className="mt-1 w-5 h-5 text-[#1677FF] border-stone-300 focus:ring-[#1677FF]" 
+                  checked={paymentMethod === 'alipay'}
+                  onChange={() => setPaymentMethod('alipay')}
+                />
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-2">
@@ -145,9 +254,11 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({ items }) => {
                   <p className="text-sm text-stone-500">Scan QR code to pay securely with Alipay.</p>
                 </div>
               </label>
-              <div className="px-4 pb-6 pt-2 space-y-4 border-t border-[#1677FF]/20 bg-white/50 flex justify-center flex-col items-center">
-                <p className="text-sm text-stone-600 text-center mb-2">Click "Pay" to generate your secure QR code.</p>
-              </div>
+              {paymentMethod === 'alipay' && (
+                <div className="px-4 pb-6 pt-2 space-y-4 border-t border-[#1677FF]/20 bg-white/50 flex justify-center flex-col items-center">
+                  <p className="text-sm text-stone-600 text-center mb-2">Click "Pay" to generate your secure QR code.</p>
+                </div>
+              )}
             </div>
           </div>
 

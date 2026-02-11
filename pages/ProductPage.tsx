@@ -96,7 +96,7 @@ const ProductPage: React.FC<ProductPageProps> = ({ addToCart }) => {
           <div className="space-y-2">
             <h1 className="text-[#292524] text-3xl md:text-4xl font-bold leading-tight">{product.name}</h1>
             <div className="flex items-center gap-4">
-              <span className="text-2xl font-bold text-[#292524]">${product.price.toFixed(2)}</span>
+              <span className="text-2xl font-bold text-[#292524]">$0.01</span>
               <div className="flex items-center gap-1">
                 {[1, 2, 3, 4].map(i => <span key={i} className="material-symbols-outlined text-orange-400 text-lg fill-current">star</span>)}
                 <span className="material-symbols-outlined text-orange-400 text-lg fill-current">star_half</span>
