@@ -25,40 +25,11 @@ const ScrollToTopEffect = () => {
 }
 
 const App: React.FC = () => {
-  const [cartItems, setCartItems] = useState<CartItem[]>([
-      {
-          id: '101',
-          name: 'Velocity Runner',
-          category: 'Running',
-          price: 120.00,
-          image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCGRQLI3gt3RVKiuCNMYtQEcxD-s7i4GukYHxZbAp-XM7hy-Okosm_jhtOUe4Nl2yokoh4isP-6lRRp1Lmd7y2mrvvBPfWp4NuIb9XUe8q2XUgppTgd1H3VM91S_KcV271_hMtZUUvtGE5XJt3KuRac0xTpMJKE76ruisp8hFXi142782iE6QIgyzBvF2LHrb7CViFmZx61-W9G3obPJAgh_BXz7eoBfgN-zO6W5F8t4Ravoso-tLJqtO2Vpu9iOI0LyPN-VJjLpSo',
-          quantity: 1,
-          selectedSize: 42,
-          selectedColor: '#dc2626'
-      },
-      {
-          id: '102',
-          name: 'Urban Trekker',
-          category: 'Casual',
-          price: 145.00,
-          image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuA33kBR-TlQoGN04vGB8vYJX7DZAnyJzBrTYmcCyDc2KNblywEdCNczFpQfCYsNgKsom-s9u6D7WcWO_WTLGFJUtd854yoUk50j32D6HUdp5ptivXNr_FXfBzNiflmhnKfWXEE-O3IsNi-KSqgjledN1jG4RbE4AH5nbqY2N2AmSkSgKLzWU3KMPh7ueBDvFRxF_4QORtUof5r09y1-2Bt2_tPavACDLfdZD9MmZMxO6O2v3-Ga5qv0yG6yTcRyGLSxTtgaPHLt86E',
-          quantity: 1,
-          selectedSize: 40,
-          selectedColor: '#6b7280'
-      },
-      {
-          id: '103',
-          name: 'Court Classic',
-          category: 'Tennis',
-          price: 95.00,
-          image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCkR2337pSk7n3a6DKA0ue9MEbkBqmpb22Fik6H2Irf7K_NvkEZJ5clkcjVaV7D5QrjNYTzA1BkjZiwP7fOnA7Adu_02VTNVtiltKSfMjtWnGLg88aFXFtkp1a2qh9bm4ZbNdcvAX1J_byXvrijFpr9pEoQw3UicoDJOIXFuftPbAN9rb8TirWpxd24OhC0Ryl946OwkzYXFY0ApDdrrg4wD038BnrM2qiLChRCYzNgoFgcCLbKpC0K3Z6Hyzl9J6mRhExcUL-A0fg',
-          quantity: 1,
-          selectedSize: 41,
-          selectedColor: '#ffffff'
-      }
-  ]);
+  const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const [selectedCartItemIds, setSelectedCartItemIds] = useState<string[]>([]);
 
   const addToCart = (product: Product, size?: number, color?: string) => {
+    setSelectedCartItemIds((ids) => (ids.includes(product.id) ? ids : [...ids, product.id]));
     setCartItems(prev => {
       const existing = prev.find(item => item.id === product.id);
       if (existing) {
@@ -77,17 +48,20 @@ const App: React.FC = () => {
 
   const removeFromCart = (id: string) => {
     setCartItems(prev => prev.filter(item => item.id !== id));
+    setSelectedCartItemIds((ids) => ids.filter((x) => x !== id));
   };
 
-  const updateQuantity = (id: string, delta: number) => {
+  const updateQuantity = (id: string, quantity: number) => {
     setCartItems(prev => prev.map(item => {
       if (item.id === id) {
-        const newQuantity = Math.max(1, item.quantity + delta);
+        const newQuantity = Math.max(1, Number.isFinite(quantity) ? Math.floor(quantity) : 1);
         return { ...item, quantity: newQuantity };
       }
       return item;
     }));
   };
+
+  const selectedCartItems = cartItems.filter((i) => selectedCartItemIds.includes(i.id));
 
   return (
     <Router>
@@ -96,8 +70,19 @@ const App: React.FC = () => {
           <Route path="/" element={<HomePage />} />
           <Route path="/shop" element={<ShopPage />} />
           <Route path="/product/:id" element={<ProductPage addToCart={addToCart} />} />
-          <Route path="/cart" element={<CartPage items={cartItems} removeFromCart={removeFromCart} updateQuantity={updateQuantity} />} />
-          <Route path="/checkout" element={<CheckoutPage items={cartItems} />} />
+          <Route
+            path="/cart"
+            element={
+              <CartPage
+                items={cartItems}
+                removeFromCart={removeFromCart}
+                updateQuantity={updateQuantity}
+                selectedIds={selectedCartItemIds}
+                setSelectedIds={setSelectedCartItemIds}
+              />
+            }
+          />
+          <Route path="/checkout" element={<CheckoutPage items={selectedCartItems} />} />
           <Route path="/order-confirmation" element={<OrderConfirmationPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/account" element={<AccountPage />} />

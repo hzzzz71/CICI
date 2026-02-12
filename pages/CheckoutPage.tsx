@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { CartItem } from '../types';
 import { supabase } from '../lib/supabaseClient';
 
@@ -8,35 +8,45 @@ interface CheckoutPageProps {
 }
 
 const CheckoutPage: React.FC<CheckoutPageProps> = ({ items }) => {
+  const location = useLocation();
   const navigate = useNavigate();
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [paymentError, setPaymentError] = useState('');
   const [loading, setLoading] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [accessToken, setAccessToken] = useState<string>('');
   const [paymentMethod, setPaymentMethod] = useState<'alipay' | 'xnova'>('xnova');
 
+  const buyNowItems =
+    location && (location.state as any) && Array.isArray((location.state as any).buyNowItems)
+      ? ((location.state as any).buyNowItems as CartItem[])
+      : null;
+  const effectiveItems = buyNowItems && buyNowItems.length > 0 ? buyNowItems : items;
+
   // Calculate totals matching CartPage logic
-  const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const subtotal = effectiveItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const shipping = 12.00;
   const tax = subtotal * 0.08;
   const total = subtotal + shipping + tax;
 
   useEffect(() => {
-    if (items.length === 0) {
+    if (effectiveItems.length === 0) {
       navigate('/cart');
     }
-  }, [items, navigate]);
+  }, [effectiveItems.length, navigate]);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      const user = data?.user;
-      if (user) {
-        setUserId(user.id);
-        if (user.email) {
-          setUserEmail(user.email);
-        }
+    supabase.auth.getSession().then(({ data }) => {
+      const session = data?.session;
+      const user = session?.user;
+      if (!user || !session?.access_token) {
+        navigate('/login');
+        return;
       }
+      setUserId(user.id);
+      setUserEmail(user.email ?? null);
+      setAccessToken(session.access_token);
     });
   }, []);
 
@@ -63,11 +73,9 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({ items }) => {
 
         fetch(`${baseUrl}/api/xnova/create-payment`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
           body: JSON.stringify({ 
-             items, 
-             customerEmail: userEmail, 
-             userId,
+             items: effectiveItems, 
              // Pass card info (Caution: Only for testing or if PCI compliant)
              card: { no: cardNo, expMonth, expYear, cvv: cardCvv }
           }),
@@ -103,8 +111,8 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({ items }) => {
 
       fetch(`${baseUrl}/api/create-checkout-session`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items, customerEmail: userEmail, userId }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ items: effectiveItems }),
       })
         .then(async (r) => r.json())
         .then((data) => {
@@ -134,11 +142,11 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({ items }) => {
         existingOrderId = localStorage.getItem('last_order_id') || '';
       } catch {}
       const request = existingOrderId
-        ? fetch(`${baseUrl}/api/orders/${existingOrderId}/paid`, { method: 'PUT' })
+        ? fetch(`${baseUrl}/api/orders/${existingOrderId}/paid`, { method: 'PUT', headers: { Authorization: `Bearer ${accessToken}` } })
         : fetch(`${baseUrl}/api/orders`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items, total, status: 'paid', email: userEmail, user_id: userId }),
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+            body: JSON.stringify({ items: effectiveItems, total, status: 'paid' }),
           });
       request
         .then(async (r) => r.json())
@@ -159,7 +167,7 @@ const CheckoutPage: React.FC<CheckoutPageProps> = ({ items }) => {
       setPaymentError('Payment was not completed. Please try again.');
   };
 
-  if (items.length === 0) return null;
+  if (effectiveItems.length === 0) return null;
 
   return (
     <div className="flex-grow flex flex-col lg:flex-row max-w-7xl mx-auto w-full relative">

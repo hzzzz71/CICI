@@ -19,6 +19,7 @@ const ShopPage: React.FC = () => {
         name: p.name,
         category: p.category,
         price: Number(p.price),
+        stockLow: !!p.stock_low,
         image: p.image,
         description: p.description || undefined,
         colors: p.colors || undefined,
@@ -144,11 +145,11 @@ const ShopPage: React.FC = () => {
                         <div className="flex flex-col items-end">
                             {product.isSale ? (
                                 <>
-                                    <p className="text-base font-medium text-red-600">$0.01</p>
+                                    <p className="text-base font-medium text-red-600">${product.price.toFixed(2)}</p>
                                     <p className="text-xs text-stone-400 line-through">${product.originalPrice?.toFixed(2)}</p>
                                 </>
                             ) : (
-                                <p className="text-base font-medium text-stone-900">$0.01</p>
+                                <p className="text-base font-medium text-stone-900">${product.price.toFixed(2)}</p>
                             )}
                         </div>
                       </div>

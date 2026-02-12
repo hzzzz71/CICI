@@ -25,15 +25,17 @@ const OrdersPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getUser().then(async ({ data }) => {
-      const user = data?.user;
-      if (!user) {
+    supabase.auth.getSession().then(async ({ data }) => {
+      const session = data?.session;
+      if (!session?.access_token) {
         navigate('/login');
         return;
       }
       try {
         const baseUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
-        const res = await fetch(`${baseUrl}/api/my-orders?user_id=${encodeURIComponent(user.id)}`);
+        const res = await fetch(`${baseUrl}/api/my-orders`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
         const payload = await res.json();
         if (Array.isArray(payload)) {
           setOrders(payload);
@@ -148,4 +150,3 @@ const OrdersPage: React.FC = () => {
 };
 
 export default OrdersPage;
-

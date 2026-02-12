@@ -28,6 +28,113 @@ const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
 
 const stripe = stripeSecret ? new Stripe(stripeSecret) : null;
 
+const getBearerToken = (req) => {
+  const header = req.headers && req.headers.authorization ? String(req.headers.authorization) : '';
+  if (!header) return '';
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match && match[1] ? match[1].trim() : '';
+};
+
+const getAuthedUser = async (req) => {
+  if (!supabaseAdmin) return { user: null, error: 'supabase_not_configured' };
+  const token = getBearerToken(req);
+  if (!token) return { user: null, error: 'unauthorized' };
+  const { data, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !data || !data.user) return { user: null, error: 'unauthorized' };
+  return { user: data.user, error: null };
+};
+
+const validateStockForItems = async (items) => {
+  if (!supabaseAdmin) return { ok: true };
+  if (!Array.isArray(items) || items.length === 0) return { ok: false, reason: 'invalid_items' };
+  const qtyByProductId = new Map();
+  for (const i of items) {
+    const id = i && i.id ? String(i.id) : '';
+    if (!id) continue;
+    const qty = Math.max(1, Number(i.quantity) || 1);
+    qtyByProductId.set(id, (qtyByProductId.get(id) || 0) + qty);
+  }
+  const productIds = Array.from(qtyByProductId.keys());
+  if (productIds.length === 0) return { ok: false, reason: 'invalid_items' };
+
+  const { data: products, error } = await supabaseAdmin
+    .from('products')
+    .select('id,stock')
+    .in('id', productIds);
+  if (error) return { ok: false, reason: 'stock_query_failed' };
+
+  const stockById = new Map((products || []).map((p) => [String(p.id), Number(p.stock) || 0]));
+  const insufficient = [];
+  for (const [id, need] of qtyByProductId.entries()) {
+    const have = stockById.has(id) ? stockById.get(id) : 0;
+    if ((have || 0) < need) {
+      insufficient.push({ id, need, have: have || 0 });
+    }
+  }
+  if (insufficient.length > 0) {
+    return { ok: false, reason: 'insufficient_stock', insufficient };
+  }
+  return { ok: true };
+};
+
+const decrementStockForOrder = async (orderId) => {
+  if (!supabaseAdmin) return { ok: false, reason: 'supabase_not_configured' };
+  const { data: orderItems, error: itemsErr } = await supabaseAdmin
+    .from('order_items')
+    .select('product_id,quantity')
+    .eq('order_id', orderId)
+    .limit(500);
+  if (itemsErr) return { ok: false, reason: itemsErr.message };
+
+  const qtyByProductId = new Map();
+  for (const it of orderItems || []) {
+    const pid = it && it.product_id ? String(it.product_id) : '';
+    if (!pid) continue;
+    const qty = Math.max(1, Number(it.quantity) || 1);
+    qtyByProductId.set(pid, (qtyByProductId.get(pid) || 0) + qty);
+  }
+  const productIds = Array.from(qtyByProductId.keys());
+  if (productIds.length === 0) return { ok: true };
+
+  const { data: products, error: productsErr } = await supabaseAdmin
+    .from('products')
+    .select('id,stock')
+    .in('id', productIds);
+  if (productsErr) return { ok: false, reason: productsErr.message };
+
+  const stockById = new Map((products || []).map((p) => [String(p.id), Number(p.stock) || 0]));
+  for (const [pid, qty] of qtyByProductId.entries()) {
+    const current = stockById.has(pid) ? stockById.get(pid) : 0;
+    const next = Math.max(0, (current || 0) - qty);
+    const { error: updateErr } = await supabaseAdmin.from('products').update({ stock: next }).eq('id', pid);
+    if (updateErr) return { ok: false, reason: updateErr.message };
+  }
+  return { ok: true };
+};
+
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!supabaseAdmin) {
+      return res.status(500).json({ error: 'supabase_not_configured' });
+    }
+    if (!email || !password) {
+      return res.status(400).json({ error: 'missing_email_or_password' });
+    }
+    const { data, error } = await supabaseAdmin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+    });
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.json({ user: data.user });
+  } catch (e) {
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
 app.post('/api/profiles/sync', async (req, res) => {
   try {
     const { user_id, email } = req.body || {};
@@ -75,7 +182,32 @@ app.get('/api/products', async (req, res) => {
     if (error) {
       return res.status(500).json({ error: error.message });
     }
-    res.json(data || []);
+    const adminEmail = process.env.ADMIN_EMAIL || '';
+    let isAdmin = false;
+    if (adminEmail) {
+      const token = getBearerToken(req);
+      if (token) {
+        const { data: authData } = await supabaseAdmin.auth.getUser(token);
+        const email = authData && authData.user ? authData.user.email : null;
+        isAdmin = !!email && email.toLowerCase() === adminEmail.toLowerCase();
+      }
+    }
+    const mapped = (data || [])
+      .filter((p) => {
+        if (!p) return false;
+        if (isAdmin) return true;
+        const stock = Number(p.stock) || 0;
+        return stock > 0;
+      })
+      .map((p) => {
+        const stock = Number(p.stock) || 0;
+        const { stock: _stock, ...rest } = p;
+        return {
+          ...rest,
+          stock_low: stock > 0 && stock <= 10,
+        };
+      });
+    res.json(mapped);
   } catch (e) {
     res.status(500).json({ error: 'server_error' });
   }
@@ -94,6 +226,7 @@ app.post('/api/seed-products', async (req, res) => {
       name: p.name,
       category: p.category,
       price: p.price,
+      stock: typeof p.stock === 'number' ? p.stock : 100,
       image: p.image,
       description: p.description || null,
       colors: p.colors || null,
@@ -115,10 +248,20 @@ app.post('/api/seed-products', async (req, res) => {
 
 app.post('/api/create-checkout-session', async (req, res) => {
   try {
-    const { items, customerEmail, userId } = req.body || {};
+    const { items } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'invalid_items' });
     }
+    const { user, error: authErr } = await getAuthedUser(req);
+    if (!user || authErr) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const stockCheck = await validateStockForItems(items);
+    if (!stockCheck.ok) {
+      return res.status(400).json({ error: stockCheck.reason || 'insufficient_stock', details: stockCheck });
+    }
+    const customerEmail = user.email || null;
+    const userId = user.id;
     let orderId = null;
     if (supabaseAdmin) {
       const total = items.reduce((sum, i) => sum + (Number(i.price) || 0) * (i.quantity || 1), 0);
@@ -178,16 +321,27 @@ app.post('/api/create-checkout-session', async (req, res) => {
 
 app.post('/api/orders', async (req, res) => {
   try {
-    const { email, user_id, items, total, status } = req.body || {};
+    const { items, total, status } = req.body || {};
     if (!supabaseAdmin) {
       return res.status(500).json({ error: 'supabase_not_configured' });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'invalid_items' });
+    }
+    const { user, error: authErr } = await getAuthedUser(req);
+    if (!user || authErr) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const stockCheck = await validateStockForItems(items);
+    if (!stockCheck.ok) {
+      return res.status(400).json({ error: stockCheck.reason || 'insufficient_stock', details: stockCheck });
     }
     const { data: order, error: orderErr } = await supabaseAdmin
       .from('orders')
       .insert({
-        email: email || null,
-        user_id: user_id || null,
-        total: total || 0,
+        email: user.email || null,
+        user_id: user.id,
+        total: Number(total) || 0,
         status: status || 'paid',
       })
       .select()
@@ -210,6 +364,12 @@ app.post('/api/orders', async (req, res) => {
         return res.status(500).json({ error: itemsErr.message });
       }
     }
+    if (String(order.status) === 'paid') {
+      const dec = await decrementStockForOrder(order.id);
+      if (!dec.ok) {
+        console.error('decrement_stock_error', dec);
+      }
+    }
     res.json({ id: order.id });
   } catch (e) {
     console.error('orders_create_error', e);
@@ -223,6 +383,21 @@ app.put('/api/orders/:id/paid', async (req, res) => {
     if (!supabaseAdmin) {
       return res.status(500).json({ error: 'supabase_not_configured' });
     }
+    const { user, error: authErr } = await getAuthedUser(req);
+    if (!user || authErr) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const { data: existing, error: existingErr } = await supabaseAdmin
+      .from('orders')
+      .select('id,status')
+      .eq('id', id)
+      .single();
+    if (existingErr) {
+      return res.status(500).json({ error: existingErr.message });
+    }
+    if (existing && String(existing.status) === 'paid') {
+      return res.json({ id: existing.id });
+    }
     const { data, error } = await supabaseAdmin
       .from('orders')
       .update({ status: 'paid' })
@@ -231,6 +406,10 @@ app.put('/api/orders/:id/paid', async (req, res) => {
       .single();
     if (error) {
       return res.status(500).json({ error: error.message });
+    }
+    const dec = await decrementStockForOrder(id);
+    if (!dec.ok) {
+      console.error('decrement_stock_error', dec);
     }
     res.json({ id: data.id });
   } catch (e) {
@@ -244,9 +423,14 @@ app.get('/api/support/messages', async (req, res) => {
     if (!supabaseAdmin) {
       return res.json([]);
     }
+    const { user, error: authErr } = await getAuthedUser(req);
+    if (!user || authErr) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
     const { data, error } = await supabaseAdmin
       .from('support_messages')
       .select('*')
+      .eq('user_id', user.id)
       .order('created_at', { ascending: true })
       .limit(200);
     if (error) {
@@ -262,17 +446,17 @@ app.get('/api/support/messages', async (req, res) => {
 
 app.get('/api/my-orders', async (req, res) => {
   try {
-    const userId = req.query.user_id;
     if (!supabaseAdmin) {
       return res.status(500).json({ error: 'supabase_not_configured' });
     }
-    if (!userId) {
-      return res.status(400).json({ error: 'missing_user_id' });
+    const { user, error: authErr } = await getAuthedUser(req);
+    if (!user || authErr) {
+      return res.status(401).json({ error: 'unauthorized' });
     }
     const { data: orders, error } = await supabaseAdmin
       .from('orders')
       .select('id,total,status,created_at,order_items(id,name,price,quantity,size,color)')
-      .eq('user_id', userId)
+      .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(50);
     if (error) {
@@ -288,14 +472,18 @@ app.get('/api/my-orders', async (req, res) => {
 
 app.post('/api/support/messages', async (req, res) => {
   try {
-    const { user_id, role, text } = req.body || {};
+    const { role, text } = req.body || {};
     if (!supabaseAdmin) {
       return res.status(500).json({ error: 'supabase_not_configured' });
+    }
+    const { user, error: authErr } = await getAuthedUser(req);
+    if (!user || authErr) {
+      return res.status(401).json({ error: 'unauthorized' });
     }
     const { data, error } = await supabaseAdmin
       .from('support_messages')
       .insert({
-        user_id: user_id || null,
+        user_id: user.id,
         role: role || 'user',
         text: text || '',
       })
@@ -318,6 +506,10 @@ app.post('/api/support/ai-reply', async (req, res) => {
     if (!Array.isArray(conversation) || conversation.length === 0) {
       return res.status(400).json({ error: 'invalid_conversation' });
     }
+    const { user, error: authErr } = await getAuthedUser(req);
+    if (!user || authErr) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
     const apiKey = process.env.MINIMAX_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: 'minimax_not_configured' });
@@ -337,7 +529,20 @@ app.post('/api/support/ai-reply', async (req, res) => {
     const payload = {
       model,
       max_tokens: 800,
-      system: 'You are a helpful customer support assistant for the JIELAN shoe store. Answer concisely in the same language as the user.',
+      system:
+        `You are a customer support assistant for the JIELAN shoe store.\n` +
+        `Rules:\n` +
+        `- Never output any hidden reasoning, chain-of-thought, or <think> tags.\n` +
+        `- Answer directly and solve the user's problem with clear steps.\n` +
+        `- Ask at most ONE follow-up question only if absolutely required.\n` +
+        `- If the user asks about product recommendations, include at least one clickable link card to the shop search.\n` +
+        `- If the user asks about shipping/logistics/order tracking, include a clickable link card to the orders page.\n` +
+        `- When you include links, render them as cards using this exact format on its own line:\n` +
+        `  [[CARD|Title|https://example.com/path|Optional subtitle]]\n` +
+        `Links:\n` +
+        `- Shop: ${FRONTEND_URL}/#/shop?q=running\n` +
+        `- Orders: ${FRONTEND_URL}/#/account/orders\n` +
+        `Output language: same as the user.\n`,
       messages,
     };
     const resp = await fetch(`${baseUrl}/v1/messages`, {
@@ -356,8 +561,12 @@ app.post('/api/support/ai-reply', async (req, res) => {
     }
     const blocks = data && Array.isArray(data.content) ? data.content : [];
     const textBlock = blocks.find((b) => b.type === 'text');
-    const replyText = textBlock && textBlock.text ? textBlock.text : 'Sorry, I could not generate a response.';
-    res.json({ reply: replyText });
+    const rawReply = textBlock && textBlock.text ? textBlock.text : 'Sorry, I could not generate a response.';
+    const cleanedReply = String(rawReply)
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/^\s*(think|thought)\s*:.*$/gim, '')
+      .trim();
+    res.json({ reply: cleanedReply });
   } catch (e) {
     console.error('ai_reply_error', e);
     res.status(500).json({ error: 'server_error' });
@@ -367,17 +576,27 @@ app.post('/api/support/ai-reply', async (req, res) => {
 // --- Xnova Payment Integration ---
 app.post('/api/xnova/create-payment', async (req, res) => {
   try {
-    const { items, customerEmail, userId, card } = req.body || {};
+    const { items, card } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'invalid_items' });
+    }
+    const { user, error: authErr } = await getAuthedUser(req);
+    if (!user || authErr) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const customerEmail = user.email || null;
+    const userId = user.id;
+
+    const stockCheck = await validateStockForItems(items);
+    if (!stockCheck.ok) {
+      return res.status(400).json({ error: stockCheck.reason || 'insufficient_stock', details: stockCheck });
     }
 
     // 1. Create order in Supabase
     let orderId = null;
     let total = 0;
     if (supabaseAdmin) {
-      // FORCE PRICE TO 0.01 FOR TESTING
-      total = items.reduce((sum, i) => sum + 0.01 * (i.quantity || 1), 0);
+      total = items.reduce((sum, i) => sum + (Number(i.price) || 0) * (i.quantity || 1), 0);
       const { data: order, error: orderErr } = await supabaseAdmin
         .from('orders')
         .insert({
@@ -398,7 +617,7 @@ app.post('/api/xnova/create-payment', async (req, res) => {
         order_id: order.id,
         product_id: i.id,
         name: i.name,
-        price: 0.01, // Force 0.01
+        price: Number(i.price) || 0,
         quantity: i.quantity || 1,
         size: i.selectedSize || null,
         color: i.selectedColor || null,
@@ -407,8 +626,7 @@ app.post('/api/xnova/create-payment', async (req, res) => {
     } else {
         // Fallback for dev without supabase
         orderId = 'TEST_' + Date.now();
-        // FORCE PRICE TO 0.01 FOR TESTING
-        total = items.reduce((sum, i) => sum + 0.01 * (i.quantity || 1), 0);
+        total = items.reduce((sum, i) => sum + (Number(i.price) || 0) * (i.quantity || 1), 0);
     }
 
     // 2. Prepare Xnova Payload
@@ -738,7 +956,22 @@ app.post('/api/xnova/notify', async (req, res) => {
     const status = isPaid ? 'paid' : 'failed';
 
     if (status === 'paid' && orderId && supabaseAdmin) {
-       await supabaseAdmin.from('orders').update({ status: 'paid' }).eq('id', orderId);
+      const { data: existing, error: existingErr } = await supabaseAdmin
+        .from('orders')
+        .select('id,status')
+        .eq('id', orderId)
+        .single();
+      if (!existingErr && existing && String(existing.status) === 'paid') {
+        return res.send('success');
+      }
+      const { error: updErr } = await supabaseAdmin.from('orders').update({ status: 'paid' }).eq('id', orderId);
+      if (updErr) {
+        console.error('xnova_notify_order_update_error', updErr);
+      }
+      const dec = await decrementStockForOrder(orderId);
+      if (!dec.ok) {
+        console.error('decrement_stock_error', dec);
+      }
     }
 
     res.send('success');

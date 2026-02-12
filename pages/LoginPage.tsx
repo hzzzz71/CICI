@@ -34,11 +34,7 @@ const LoginPage: React.FC = () => {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
         const message = error.message || '';
-        if (message.toLowerCase().includes('email not confirmed')) {
-          setError('邮箱尚未验证，请先前往邮箱点击验证链接，或点击下方按钮重新发送验证邮件。');
-        } else {
-          setError(message);
-        }
+        setError(message);
         return;
       }
       const user = data.user;
@@ -47,37 +43,28 @@ const LoginPage: React.FC = () => {
       }
       navigate('/account');
     } else {
-      const { data, error } = await supabase.auth.signUp({ email, password });
+      const baseUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
+      const resp = await fetch(`${baseUrl}/api/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        setError(payload.error || '注册失败');
+        return;
+      }
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
-        setError(error.message);
+        setError(error.message || '登录失败');
         return;
       }
       const user = data.user;
       if (user) {
         await syncProfile(user.id, user.email ?? null);
       }
-      setInfo('注册成功！我们已向您的邮箱发送验证邮件，请前往邮箱完成验证后再使用该邮箱和密码登录。');
-      setMode('signin');
-      setPassword('');
+      navigate('/account');
     }
-  };
-
-  const handleResendVerification = async () => {
-    setError('');
-    setInfo('');
-    if (!email) {
-      setError('请先在上方输入需要验证的邮箱地址');
-      return;
-    }
-    const { error } = await supabase.auth.resend({
-      type: 'signup',
-      email,
-    });
-    if (error) {
-      setError(error.message);
-      return;
-    }
-    setInfo('验证邮件已重新发送，请检查邮箱（包括垃圾邮箱）中的来自 JIELAN 的邮件。');
   };
 
   return (
@@ -166,18 +153,6 @@ const LoginPage: React.FC = () => {
                 <div className="mt-4 bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-xl flex items-center gap-2">
                   <span className="material-symbols-outlined">check_circle</span>
                   <p className="text-sm font-medium">{info}</p>
-                </div>
-              )}
-
-              {mode === 'signin' && (
-                <div className="mt-4 flex justify-center">
-                  <button
-                    type="button"
-                    onClick={handleResendVerification}
-                    className="text-xs font-medium text-primary hover:text-primary-hover underline-offset-2 hover:underline"
-                  >
-                    没收到验证邮件？点击这里重新发送
-                  </button>
                 </div>
               )}
 

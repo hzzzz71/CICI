@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { PRODUCTS } from '../constants';
 import { Product } from '../types';
 import { fetchProducts } from '../lib/api';
@@ -10,6 +10,7 @@ interface ProductPageProps {
 
 const ProductPage: React.FC<ProductPageProps> = ({ addToCart }) => {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [product, setProduct] = useState<Product | null>(null);
   const [selectedImage, setSelectedImage] = useState<string>('');
   const [selectedColor, setSelectedColor] = useState<string>('');
@@ -24,6 +25,7 @@ const ProductPage: React.FC<ProductPageProps> = ({ addToCart }) => {
               name: p.name,
               category: p.category,
               price: Number(p.price),
+              stockLow: !!p.stock_low,
               image: p.image,
               images: p.images || undefined,
               description: p.description || undefined,
@@ -35,7 +37,11 @@ const ProductPage: React.FC<ProductPageProps> = ({ addToCart }) => {
               isLimited: p.is_limited || false,
             }))
           : PRODUCTS;
-        const found = source.find(p => p.id === id) || source[0];
+        const found = source.find(p => p.id === id);
+        if (!found) {
+          setProduct(null);
+          return;
+        }
         setProduct(found);
         setSelectedImage(found.image);
         if (found.colors && found.colors.length > 0) {
@@ -44,7 +50,11 @@ const ProductPage: React.FC<ProductPageProps> = ({ addToCart }) => {
         setSelectedSize(8);
       })
       .catch(() => {
-        const found = PRODUCTS.find(p => p.id === id) || PRODUCTS[0];
+        const found = PRODUCTS.find(p => p.id === id);
+        if (!found) {
+          setProduct(null);
+          return;
+        }
         setProduct(found);
         setSelectedImage(found.image);
         if (found.colors && found.colors.length > 0) {
@@ -54,10 +64,20 @@ const ProductPage: React.FC<ProductPageProps> = ({ addToCart }) => {
       });
   }, [id]);
 
-  if (!product) return <div>Loading...</div>;
+  if (!product) return <div className="layout-container flex h-full grow flex-col px-4 md:px-10 py-10 max-w-7xl mx-auto w-full">该商品已售罄或不存在。</div>;
 
   const handleAddToCart = () => {
     addToCart(product, selectedSize, selectedColor);
+  };
+  
+  const handleBuyNow = () => {
+    const buyNowItem: any = {
+      ...product,
+      quantity: 1,
+      selectedSize: selectedSize || 8,
+      selectedColor: selectedColor || product.colors?.[0] || '#000',
+    };
+    navigate('/checkout', { state: { buyNowItems: [buyNowItem] } });
   };
 
   return (
@@ -96,13 +116,16 @@ const ProductPage: React.FC<ProductPageProps> = ({ addToCart }) => {
           <div className="space-y-2">
             <h1 className="text-[#292524] text-3xl md:text-4xl font-bold leading-tight">{product.name}</h1>
             <div className="flex items-center gap-4">
-              <span className="text-2xl font-bold text-[#292524]">$0.01</span>
+              <span className="text-2xl font-bold text-[#292524]">${product.price.toFixed(2)}</span>
               <div className="flex items-center gap-1">
                 {[1, 2, 3, 4].map(i => <span key={i} className="material-symbols-outlined text-orange-400 text-lg fill-current">star</span>)}
                 <span className="material-symbols-outlined text-orange-400 text-lg fill-current">star_half</span>
                 <span className="text-sm text-[#78716c] ml-1">({product.reviews || 124} reviews)</span>
               </div>
             </div>
+            {product.stockLow && (
+              <div className="text-xs font-medium text-red-600">库存紧张</div>
+            )}
           </div>
           <p className="text-[#78716c] text-base leading-relaxed">
             {product.description || "Engineered for maximum comfort and style. Perfect for everyday wear or your next adventure."}
@@ -153,9 +176,13 @@ const ProductPage: React.FC<ProductPageProps> = ({ addToCart }) => {
               <span className="material-symbols-outlined">shopping_bag</span>
               Add to Cart
             </button>
-            <Link to="/checkout" className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-[#e7e5e4] bg-transparent px-6 py-3.5 text-base font-bold text-[#292524] transition-colors hover:bg-orange-50">
+            <button
+              type="button"
+              onClick={handleBuyNow}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-[#e7e5e4] bg-transparent px-6 py-3.5 text-base font-bold text-[#292524] transition-colors hover:bg-orange-50"
+            >
               Buy It Now
-            </Link>
+            </button>
           </div>
           <div className="mt-4 space-y-4">
             <div className="group">

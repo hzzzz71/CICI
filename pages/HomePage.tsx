@@ -22,6 +22,7 @@ const HomePage: React.FC = () => {
           isNew: p.is_new || false,
           isSale: p.is_sale || false,
           isLimited: p.is_limited || false,
+          stockLow: !!p.stock_low,
         }));
         setData(mapped);
       }
@@ -99,7 +100,7 @@ const HomePage: React.FC = () => {
                     <h3 className="text-lg font-bold text-stone-900">{product.name}</h3>
                     <p className="text-sm text-stone-500">{product.category}</p>
                   </div>
-                  <p className="text-lg font-semibold text-stone-900">$0.01</p>
+                  <p className="text-lg font-semibold text-stone-900">${product.price.toFixed(2)}</p>
                 </div>
                 {product.colors && (
                   <div className="mt-3 flex gap-2">

@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { supabase } from '../lib/supabaseClient';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -148,11 +149,230 @@ export const Footer: React.FC = () => {
 };
 
 export const Layout: React.FC<LayoutProps> = ({ children, cartCount }) => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [isSupportOpen, setIsSupportOpen] = useState(false);
+  const [supportInput, setSupportInput] = useState('');
+  const [supportMessages, setSupportMessages] = useState<Array<{ id: string | number; sender: 'user' | 'support'; text: string }>>([]);
+  const [supportAccessToken, setSupportAccessToken] = useState<string>('');
+  const supportEndRef = useRef<HTMLDivElement>(null);
+
+  const parseSupportSegments = (text: string) => {
+    const segments: Array<
+      | { type: 'text'; text: string }
+      | { type: 'card'; title: string; url: string; subtitle?: string }
+    > = [];
+    const regex = /\[\[CARD\|([^|\]]+)\|([^|\]]+)(?:\|([^\]]*))?\]\]/g;
+    let last = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      const before = text.slice(last, match.index).trim();
+      if (before) segments.push({ type: 'text', text: before });
+      const title = (match[1] || '').trim();
+      const url = (match[2] || '').trim();
+      const subtitle = (match[3] || '').trim();
+      if (title && url) segments.push({ type: 'card', title, url, subtitle });
+      last = match.index + match[0].length;
+    }
+    const after = text.slice(last).trim();
+    if (after) segments.push({ type: 'text', text: after });
+    return segments.length > 0 ? segments : [{ type: 'text', text }];
+  };
+
+  useEffect(() => {
+    supportEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [supportMessages, isSupportOpen]);
+
+  useEffect(() => {
+    if (!isSupportOpen) return;
+    const baseUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
+    supabase.auth.getSession().then(({ data }) => {
+      const session = data?.session;
+      const token = session?.access_token || '';
+      setSupportAccessToken(token);
+      if (!token) return;
+      if (supportMessages.length > 0) return;
+      fetch(`${baseUrl}/api/support/messages`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (Array.isArray(data) && data.length > 0) {
+            setSupportMessages(
+              data.map((m: any) => ({
+                id: m.id,
+                sender: m.role === 'support' ? 'support' : 'user',
+                text: String(m.text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim(),
+              })),
+            );
+            return;
+          }
+          const welcomeText = 'Hi there! Welcome to JIELAN support. How can we help you today?';
+          setSupportMessages([{ id: Date.now(), sender: 'support', text: welcomeText }]);
+          fetch(`${baseUrl}/api/support/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ role: 'support', text: welcomeText }),
+          }).catch(() => {});
+        })
+        .catch(() => {});
+    });
+  }, [isSupportOpen]);
+
+  const handleSupportSend = () => {
+    const text = supportInput.trim();
+    if (!text) return;
+    const baseUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
+    if (!supportAccessToken) {
+      navigate('/login');
+      return;
+    }
+    const newUserMsg = { id: Date.now(), sender: 'user' as const, text };
+    const nextConversation = [...supportMessages, newUserMsg];
+    setSupportMessages(nextConversation);
+    setSupportInput('');
+    fetch(`${baseUrl}/api/support/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${supportAccessToken}` },
+      body: JSON.stringify({ role: 'user', text }),
+    }).catch(() => {});
+    fetch(`${baseUrl}/api/support/ai-reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${supportAccessToken}` },
+      body: JSON.stringify({
+        conversation: nextConversation.map((m) => ({
+          role: m.sender === 'support' ? 'assistant' : 'user',
+          text: m.text,
+        })),
+      }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        const responseText =
+          data && typeof data.reply === 'string'
+            ? data.reply
+            : 'Thanks for your message! One of our support agents will be with you shortly.';
+        const newSupportMsg = { id: Date.now() + 1, sender: 'support' as const, text: responseText };
+        setSupportMessages((prev) => [...prev, newSupportMsg]);
+        fetch(`${baseUrl}/api/support/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${supportAccessToken}` },
+          body: JSON.stringify({ role: 'support', text: responseText }),
+        }).catch(() => {});
+      })
+      .catch(() => {});
+  };
+
   return (
     <div className="flex min-h-screen flex-col font-sans">
       <Header cartCount={cartCount} />
       <main className="flex-grow">{children}</main>
       <Footer />
+      {location.pathname !== '/support' && location.pathname !== '/login' && (
+        <>
+          {isSupportOpen && (
+            <div className="fixed bottom-24 right-6 z-50 w-[340px] max-w-[calc(100vw-3rem)] overflow-hidden rounded-2xl border border-border-light bg-white shadow-xl">
+              <div className="flex items-center justify-between border-b border-border-light px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-primary">support_agent</span>
+                  <span className="text-sm font-bold text-stone-900">Support</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsSupportOpen(false)}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-orange-50 transition-colors"
+                >
+                  <span className="material-symbols-outlined text-stone-600">close</span>
+                </button>
+              </div>
+              <div className="h-[360px] overflow-y-auto bg-background-light p-4 space-y-3">
+                {!supportAccessToken ? (
+                  <div className="rounded-xl border border-border-light bg-white p-4 text-sm text-stone-700">
+                    <div className="font-semibold text-stone-900 mb-2">请先登录</div>
+                    <button
+                      type="button"
+                      onClick={() => navigate('/login')}
+                      className="mt-2 w-full rounded-xl bg-primary py-2.5 text-sm font-bold text-white hover:bg-primary-hover transition-colors"
+                    >
+                      去登录
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {supportMessages.flatMap((m) => {
+                      const segments = parseSupportSegments(m.text || '');
+                      return segments.map((seg, idx) => {
+                        if (seg.type === 'card') {
+                          return (
+                            <div key={`${m.id}_${idx}`} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                              <div
+                                onClick={() => (window.location.href = seg.url)}
+                                className="max-w-[85%] rounded-2xl border border-border-light bg-white shadow-sm cursor-pointer hover:shadow-md transition-shadow overflow-hidden"
+                              >
+                                <div className="px-4 py-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-bold text-stone-900">{seg.title}</div>
+                                    <span className="material-symbols-outlined text-stone-400">open_in_new</span>
+                                  </div>
+                                  {seg.subtitle && <div className="text-xs text-stone-500 mt-1 font-medium">{seg.subtitle}</div>}
+                                  <div className="text-[11px] text-stone-400 mt-2 break-all">{seg.url}</div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div key={`${m.id}_${idx}`} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                            <div
+                              className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
+                                m.sender === 'user'
+                                  ? 'bg-primary text-white rounded-tr-none'
+                                  : 'bg-white text-stone-800 border border-border-light rounded-tl-none'
+                              }`}
+                            >
+                              {seg.text}
+                            </div>
+                          </div>
+                        );
+                      });
+                    })}
+                    <div ref={supportEndRef} />
+                  </>
+                )}
+              </div>
+              <div className="border-t border-border-light bg-white p-3">
+                <div className="flex items-center gap-2">
+                  <input
+                    value={supportInput}
+                    onChange={(e) => setSupportInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSupportSend();
+                    }}
+                    placeholder="输入消息…"
+                    className="h-10 flex-1 rounded-xl border border-stone-200 bg-white px-3 text-sm text-stone-900 focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                    disabled={!supportAccessToken}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSupportSend}
+                    className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50"
+                    disabled={!supportAccessToken || !supportInput.trim()}
+                  >
+                    <span className="material-symbols-outlined text-[20px]">send</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setIsSupportOpen((v) => !v)}
+            className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-full bg-primary text-white shadow-lg shadow-orange-500/30 hover:bg-primary-hover transition-colors flex items-center justify-center"
+          >
+            <span className="material-symbols-outlined text-[28px]">{isSupportOpen ? 'close' : 'chat'}</span>
+          </button>
+        </>
+      )}
     </div>
   );
 };

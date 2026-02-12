@@ -3,6 +3,7 @@ create table if not exists products (
   name text not null,
   category text,
   price numeric not null,
+  stock integer not null default 100,
   image text,
   description text,
   colors text[],

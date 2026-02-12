@@ -1,0 +1,148 @@
+一、支付成功后是否会自动同步到云端数据库（Supabase）
+
+1. 创建订单时的写入逻辑
+- 入口接口：POST /api/xnova/create-payment
+- 相关代码：server/index.js 中约第 375–407 行
+- 使用的云端数据库：Supabase（PostgreSQL），通过 @supabase/supabase-js 的服务端客户端 supabaseAdmin 写入
+- 逻辑：
+  - 计算订单总金额 total（目前为了测试，强制单价 0.01）
+  - 在表 orders 中插入一条记录：
+    - user_id：当前用户 ID（可为空）
+    - email：客户邮箱（可为空）
+    - total：订单总金额
+    - status：'pending'
+  - 获取插入后返回的 order.id 作为 orderId
+  - 在表 order_items 中为购物车中的每件商品插入记录（关联 order_id）
+  - 如果 Supabase 未配置，则使用一个 TEST_* 的虚拟 orderId，不写入数据库
+
+2. 支付结果回调时的更新逻辑
+- 回调接口：POST /api/xnova/notify
+- 相关代码：server/index.js 中约第 727–742 行
+- 请求来源：Xnova 支付系统在完成支付流程后，以 HTTP POST 的方式调用 notify_url
+- notify_url 配置：
+  - 在 .env.local / Render 环境变量中：
+    - XNOVA_NOTIFY_URL=https://cici-ywin.onrender.com/api/xnova/notify
+  - 在 /api/xnova/create-payment 中会把该值清洗后放入 payload.notify_url，提交给 Xnova
+- 解析逻辑：
+  - 通过 express.json() 和 express.urlencoded() 中间件解析请求体
+  - 从 body 中兼容多种字段名提取：
+    - orderId：body.order_id || body.order_no || body.OrderNo || body.OrderID
+    - 支付状态：
+      - 视为 “paid” 的条件：body.order_status === '1' || body.OrderStatus === '1' || body.status === 'success' || body.Status === 'Success'
+      - 否则视为 'failed'
+  - 当状态为 'paid' 且有 orderId 时：
+    - 调用 supabaseAdmin.from('orders').update({ status: 'paid' }).eq('id', orderId)
+    - 也就是把对应订单记录从 pending 更新为 paid
+  - 无论成功失败，都返回文本 'success' 或 'error' 给 Xnova
+
+3. 当前整体行为总结
+- 一开始创建订单时，订单会以 status='pending' 记录在 Supabase 的 orders 表中。
+- 用户完成支付并且 Xnova 判定成功（order_status=1 或 status=success）后，Xnova 会调用 notify_url。
+- 后端在 /api/xnova/notify 中解析回调体，根据 order_status / status 判断是否成功：
+  - 成功：orders.status 从 'pending' 更新为 'paid'
+  - 失败：不更新订单，只记录日志（你可以根据需要扩展失败处理）
+- 因此：只要 Xnova 返回的是成功结果，支付成功后订单会自动从 pending→paid，同步到你的 Supabase 云端数据库。
+
+
+二、实现这一行为所用到的主要技术与库
+
+1. Supabase Admin 客户端
+- 引入方式：
+  - import { createClient } from '@supabase/supabase-js';
+  - 使用服务端密钥 SUPABASE_SERVICE_ROLE_KEY 创建 supabaseAdmin：
+    - const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) : null;
+- 作用：
+  - 代表你在 Supabase 后台的“服务端身份”，可以读写受保护的表（如 orders、order_items、profiles 等）
+  - 通过 supabaseAdmin.from('table').insert(...) / update(...) / select(...) 等方式操作数据库
+
+2. Express HTTP 服务器
+- 引入方式：
+  - import express from 'express';
+  - const app = express();
+  - app.use(express.json());
+  - app.use(express.urlencoded({ extended: false }));
+- 作用：
+  - 提供 REST API 端点给前端调用（/api/xnova/create-payment）
+  - 暴露回调端点给 Xnova 调用（/api/xnova/notify）
+
+3. Xnova Direct API 集成
+- 调用地址：
+  - 测试环境：https://test-api.xnova.sg/v1/authorise
+- 请求参数：
+  - merchant_id、account_id、order_no、amount、currency 等基础字段
+  - website、items、cart_items 等订单信息
+  - notify_url：后端回调地址（例如 https://cici-ywin.onrender.com/api/xnova/notify）
+  - card、expiration_month、expiration_year、security_code 等卡信息（测试卡）
+  - encryption_data：使用 SHA-256 对一串字段 + signKey 进行哈希签名
+- 返回结果：
+  - 可能是 XML 或 JSON：
+    - XML 时通过正则提取 <key>value</key>
+    - JSON 时直接 JSON.parse
+  - 常见字段：
+    - order_status：'1' 表示成功，'0' 表示失败
+    - issuer_url：当需要 3DS 验证时，用于跳转的 URL
+
+4. 3DS 跳转和回调处理（issuer_url、return_url、notify_url）
+- 当 Xnova 返回 data.issuer_url 时：
+  - 后端将 issuer_url 中的 &amp; 转换为 &，再用 URL 类解析：
+    - const decodedIssuer = String(data.issuer_url).replace(/&amp;/g, '&');
+    - const issuerUrlObj = new URL(decodedIssuer);
+  - 根据当前订单 ID 组装 return_url：
+    - const returnUrl = `${FRONTEND_URL}/#/order-confirmation?orderId=${orderId}`;
+  - 如果 issuer_url 中缺少 return_url 和 notify_url，则追加：
+    - issuerUrlObj.searchParams.set('return_url', returnUrl);
+    - issuerUrlObj.searchParams.set('notify_url', cleanNotifyUrl);
+  - 最终将处理后的 issuer_url 作为 url 返回给前端：
+    - res.json({ url: issuerUrlObj.toString(), orderId });
+- 前端拿到 url 后重定向到 Xnova 的 3DS 页面，用户在 Xnova 页面完成验证，完成后：
+  - 浏览器会跳回 return_url（前端订单确认页）
+  - Xnova 会向 notify_url 发送支付结果通知，触发 /api/xnova/notify 更新订单状态
+
+
+三、参考文档与链路说明
+
+1. Xnova 官方文档
+- Direct API 说明（支付请求字段）：
+  - https://docs.xnova.sg/direct
+- API 介绍与 notify_url / return_url 定义：
+  - https://docs.xnova.sg/introduction
+- 关键点：
+  - 使用 REST + 表单编码请求体
+  - 测试模式与生产模式由 API key + endpoint 决定
+  - notify_url：支付完成后的服务器到服务器通知地址
+  - return_url：支付完成后浏览器跳转回商户网站的地址
+
+2. 本项目中的关键端点与配置
+- 前端域名：
+  - https://cici-bay.vercel.app
+- 后端域名：
+  - https://cici-ywin.onrender.com
+- 重要环境变量：
+  - BACKEND：
+    - SUPABASE_URL：你的 Supabase 项目 URL
+    - SUPABASE_SERVICE_ROLE_KEY：服务端密钥，用于 supabaseAdmin
+    - FRONTEND_URL=https://cici-bay.vercel.app
+    - XNOVA_API_BASE_URL=https://test-api.xnova.sg/v1/authorise
+    - XNOVA_MERCHANT_ID、XNOVA_API_KEY、XNOVA_API_SECRET：由 Xnova 提供
+    - XNOVA_NOTIFY_URL=https://cici-ywin.onrender.com/api/xnova/notify
+    - XNOVA_REQUEST_FORMAT=form
+  - 前端（Vercel）：
+    - VITE_SUPABASE_URL、VITE_SUPABASE_ANON_KEY
+    - VITE_SERVER_URL=https://cici-ywin.onrender.com
+
+3. 订单状态变化流程总结
+- 步骤 1：前端调用 /api/xnova/create-payment，后端：
+  - 在 Supabase 中创建 orders（status='pending'）和 order_items
+  - 向 Xnova 发送支付请求，附带 notify_url
+  - 如需要 3DS，返回处理后的 issuer_url 给前端
+- 步骤 2：用户在 Xnova 页面完成支付或验证
+  - Xnova 将支付结果 POST 到 notify_url（/api/xnova/notify）
+- 步骤 3：后端处理通知：
+  - 解析订单号和 order_status / status
+  - 成功：更新 Supabase 中该订单的 status='paid'
+  - 失败：保持 pending 或由你后续扩展失败状态
+
+4. 结论
+- 只要 Xnova 确认支付成功并正确调用 notify_url，这个项目已经实现了“支付成功自动同步更新到云端数据库（Supabase）”的完整闭环。
+- 你需要重点监控的，是 Xnova 返回的 order_status / status 以及 /api/xnova/notify 的日志，以确认实际业务是否成功。
+
