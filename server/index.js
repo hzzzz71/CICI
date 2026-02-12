@@ -645,7 +645,7 @@ app.post('/api/xnova/create-payment', async (req, res) => {
     }
 
     console.log('Xnova Response:', data);
-
+    
     // 5. Handle Result
     // Check if response is HTML (direct page content)
     if (contentType.includes('text/html')) {
@@ -677,6 +677,28 @@ app.post('/api/xnova/create-payment', async (req, res) => {
         
         // If no URL found, return error with raw HTML for debugging
         return res.status(400).json({ error: 'received_html_instead_of_json', raw: text.substring(0, 500) + '...' });
+    }
+
+    // 6. Handle 3DS flow via issuer_url (JSON response)
+    if (data && data.issuer_url) {
+      try {
+        const decodedIssuer = String(data.issuer_url).replace(/&amp;/g, '&');
+        const issuerUrlObj = new URL(decodedIssuer);
+
+        const returnUrl = `${FRONTEND_URL}/#/order-confirmation?orderId=${orderId}`;
+        if (!issuerUrlObj.searchParams.has('return_url')) {
+          issuerUrlObj.searchParams.set('return_url', returnUrl);
+        }
+        if (!issuerUrlObj.searchParams.has('notify_url') && cleanNotifyUrl) {
+          issuerUrlObj.searchParams.set('notify_url', cleanNotifyUrl);
+        }
+
+        const finalIssuerUrl = issuerUrlObj.toString();
+        console.log('Using issuer_url for 3DS:', finalIssuerUrl);
+        return res.json({ url: finalIssuerUrl, orderId });
+      } catch (e) {
+        console.error('issuer_url_parse_error', e, data.issuer_url);
+      }
     }
 
     const rawStatus =
